@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+
+# Swift/Xcode
+NoteFlow/.build/
+NoteFlow/.swiftpm/
+NoteFlow/DerivedData/
+NoteFlow/build/
+*.xcodeproj/
+NoteFlow.xcworkspace/
+
+# NoteFlow Specific
+NoteFlow/Sources/NoteFlowCore/Storage/kb_cache.sqlite
+transcript.txt
+session.json
+*.log
+*.temp.json
+*.temp.txt
+
+# Artifacts
+Notetaker_App_Icon.png
+noteflow_final_ui_mockup.png
+loopback_output.log
+release_build.log
+EOF

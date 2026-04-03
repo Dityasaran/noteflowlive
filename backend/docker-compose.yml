@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  noteflow-backend:
+    build:
+      context: .
+      args:
+        WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-large-v3}
+        EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-small-en-v1.5}
+    image: noteflow-backend:latest
+    container_name: noteflow-backend
+
+    # GPU passthrough — requires nvidia-container-toolkit on the host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    runtime: nvidia   # docker-compose v2 compat
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-large-v3}
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE_TYPE: float16
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-small-en-v1.5}
+      EMBED_DEVICE: cuda
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s   # give model loading time
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── Local CPU-only dev service (no GPU required) ───────────────────────────
+  noteflow-backend-cpu:
+    build:
+      context: .
+      args:
+        WHISPER_MODEL_SIZE: tiny
+        EMBED_MODEL: BAAI/bge-small-en-v1.5
+    image: noteflow-backend-cpu:latest
+    container_name: noteflow-backend-cpu
+    profiles: ["dev"]   # only starts with: docker compose --profile dev up
+    ports:
+      - "8080:8080"
+    environment:
+      WHISPER_MODEL_SIZE: tiny
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE_TYPE: int8
+      EMBED_MODEL: BAAI/bge-small-en-v1.5
+      EMBED_DEVICE: cpu
+    restart: unless-stopped
