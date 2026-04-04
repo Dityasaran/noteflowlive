@@ -1,6 +1,6 @@
 # ── Base image ────────────────────────────────────────────────────────────────
 # CUDA 12.4 + cuDNN 9, Python 3.11 — matches GCP Deep Learning VM defaults
-FROM nvidia/cuda:12.4.1-cudnn9-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 # ── System deps ───────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,7 +22,7 @@ WORKDIR /app
 # Copy requirements first for layer caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121 \
+    && pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124 \
     && pip install --no-cache-dir -r requirements.txt
 
 # ── Pre-download models at build time ─────────────────────────────────────────
