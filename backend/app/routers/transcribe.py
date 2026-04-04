@@ -1,29 +1,13 @@
-"""
-WebSocket /ws/transcribe
-
-Protocol (Mac → Server):
-  - First message: JSON control frame
-    { "channel": "mic" | "system", "sample_rate": 16000, "language": "en" }
-  - Subsequent messages: raw PCM bytes (int16, mono, 16 kHz)
-    sent in ~100ms chunks (1600 samples = 3200 bytes)
-
-Protocol (Server → Mac):
-  JSON frames:
-  { "type": "transcript", "speaker": "you" | "them", "text": "...", "timestamp": 1234567890 }
-  { "type": "error", "message": "..." }
-
-faster-whisper is run on GPU in a thread pool to avoid blocking the event loop.
-Each connection maintains a rolling audio buffer that is flushed every VAD silence gap.
-"""
-
 import asyncio
 import json
 import logging
-import numpy as np
+import os
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from faster_whisper.vad import VadOptions
 
 from app.core.model_registry import ModelRegistry
 
@@ -35,27 +19,22 @@ SAMPLE_RATE       = 16_000          # expected from client
 CHUNK_FLUSH_SEC   = 5.0             # seconds of audio before forced flush
 MIN_SPEECH_SEC    = 0.3             # discard very short segments
 SILENCE_THRESHOLD = 0.5             # seconds of VAD silence before flush
+SAVE_DIR          = Path(os.path.expanduser("~/Documents/NoteFlow/"))
 
 
 def _pcm_bytes_to_float32(data: bytes) -> np.ndarray:
-    """Convert raw float32 PCM bytes → float32 numpy array."""
     return np.frombuffer(data, dtype=np.float32)
 
 
 def _transcribe_sync(audio_np: np.ndarray, language: str, speaker: str):
-    """
-    Runs faster-whisper on the thread pool (blocking).
-    Returns a list of segment dicts.
-    """
     model = ModelRegistry.whisper
-    segments, info = model.transcribe(
+    segments, _ = model.transcribe(
         audio_np,
         language=language,
         beam_size=5,
-        vad_filter=False,  # Disable VAD for synthetic audio tests
+        vad_filter=False,
         word_timestamps=False,
     )
-    import time
     results = []
     for seg in segments:
         text = seg.text.strip()
@@ -65,32 +44,73 @@ def _transcribe_sync(audio_np: np.ndarray, language: str, speaker: str):
             "type": "transcript",
             "speaker": speaker,
             "text": text,
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(datetime.now().timestamp() * 1000)
         })
-    
-    # --- Loopback Test Fallback ---
+
     if not results and len(audio_np) > 0:
         results.append({
             "type": "transcript",
             "speaker": speaker,
             "text": "[Loopback Test Success: Audio Received]",
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(datetime.now().timestamp() * 1000)
         })
-    # ----------------------------
-    
+
     return results
 
 
-class AudioBuffer:
-    """Accumulates PCM float32 samples; flushes when full or on demand."""
+class SessionStore:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.dir = SAVE_DIR / session_id
+        self.started_at = datetime.now()
+        self.transcript: list[dict] = []
+        self.last_flush = datetime.now()
+        self.dir.mkdir(parents=True, exist_ok=True)
 
+    def add_segment(self, segment: dict):
+        self.transcript.append(segment)
+        timestamp = datetime.fromtimestamp(segment["timestamp"] / 1000).strftime("%H:%M:%S")
+        line = f"[{timestamp}] {segment.get('speaker', 'unknown')}: {segment['text']}\n"
+        
+        with open(self.dir / "transcript.txt", "a") as f:
+            f.write(line)
+            # Ensure periodic flush (and every time if needed for crash protection)
+            if (datetime.now() - self.last_flush).seconds >= 60:
+                f.flush()
+                os.fsync(f.fileno())
+                self.last_flush = datetime.now()
+
+    def save_final(self):
+        if not self.transcript:
+            return
+
+        ended_at = datetime.now()
+        data = {
+            "session_id": self.session_id,
+            "started_at": self.started_at.isoformat(),
+            "ended_at": ended_at.isoformat(),
+            "transcript": self.transcript,
+            "suggestions": []
+        }
+        
+        temp_path = self.dir / "session.json.temp"
+        final_path = self.dir / "session.json"
+        
+        with open(temp_path, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+            
+        temp_path.rename(final_path)
+
+
+class AudioBuffer:
     def __init__(self, flush_secs: float = CHUNK_FLUSH_SEC, sr: int = SAMPLE_RATE):
         self._buf: list[np.ndarray] = []
         self._total_samples = 0
         self._flush_samples = int(flush_secs * sr)
 
     def push(self, chunk: np.ndarray) -> Optional[np.ndarray]:
-        """Push chunk; returns full buffer for transcription if threshold reached."""
         self._buf.append(chunk)
         self._total_samples += len(chunk)
         if self._total_samples >= self._flush_samples:
@@ -107,7 +127,7 @@ class AudioBuffer:
 
     @property
     def duration_sec(self) -> float:
-        return self._total_samples / SAMPLE_RATE
+        return self._total_samples / CHUNK_FLUSH_SEC
 
 
 @router.websocket("/ws/transcribe")
@@ -118,16 +138,18 @@ async def ws_transcribe(websocket: WebSocket):
     speaker  = "you"
     language = "en"
     buffer   = AudioBuffer()
+    session_store: Optional[SessionStore] = None
     loop     = asyncio.get_event_loop()
 
     async def flush_and_send(audio: np.ndarray, current_speaker: str):
-        """Offload transcription to thread pool; send results back."""
         try:
             segments = await loop.run_in_executor(
                 None, _transcribe_sync, audio, language, current_speaker
             )
             for seg in segments:
                 await websocket.send_text(json.dumps(seg))
+                if session_store:
+                    session_store.add_segment(seg)
         except Exception as exc:
             logger.exception("Transcription error")
             await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
@@ -136,32 +158,39 @@ async def ws_transcribe(websocket: WebSocket):
         while True:
             message = await websocket.receive()
 
-            # ── Control frame (JSON) ─────────────────────────────────────────
             if "text" in message:
                 try:
                     text_msg = message.get("text")
                     if text_msg is None: continue
                     ctrl = json.loads(text_msg)
+                    
+                    # session_id check
+                    received_session_id = ctrl.get("session_id")
+                    if received_session_id and (not session_store or session_store.session_id != received_session_id):
+                        if session_store:
+                            session_store.save_final()
+                        session_store = SessionStore(received_session_id)
+
                     if ctrl.get("type") == "end_session":
                         audio = buffer.flush()
                         if audio is not None and len(audio) > 0:
-                            asyncio.create_task(flush_and_send(audio, speaker))
+                            await flush_and_send(audio, speaker)
+                        if session_store:
+                            session_store.save_final()
+                            session_store = None
                         continue
                         
                     new_speaker = ctrl.get("speaker", speaker)
                     language = ctrl.get("language", language)
-                    session_id = ctrl.get("session_id", None)
                     
                     if new_speaker != speaker:
-                        # Flush whatever we have on speaker switch
                         audio = buffer.flush()
                         if audio is not None and len(audio) > 0:
                             asyncio.create_task(flush_and_send(audio, speaker))
                         speaker = new_speaker
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, KeyError):
                     pass
 
-            # ── Audio bytes ──────────────────────────────────────────────────
             elif "bytes" in message:
                 chunk_f32 = _pcm_bytes_to_float32(message["bytes"])
                 audio = buffer.push(chunk_f32)
@@ -170,14 +199,16 @@ async def ws_transcribe(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {websocket.client}")
-        # Final flush
         audio = buffer.flush()
         if audio is not None and len(audio) > 0:
-            # Can't send after disconnect; just log
-            logger.info(f"Discarding {buffer.duration_sec:.1f}s unprocessed audio on disconnect")
+            asyncio.create_task(flush_and_send(audio, speaker))
+        if session_store:
+            session_store.save_final()
     except Exception as exc:
         logger.exception(f"WebSocket error: {exc}")
         try:
             await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
         except Exception:
             pass
+        if session_store:
+            session_store.save_final()

@@ -28,3 +28,6 @@ noteflow_final_ui_mockup.png
 loopback_output.log
 release_build.log
 EOF
+backend/venv-local/
+backend/*.pem
+backend/.env.local
