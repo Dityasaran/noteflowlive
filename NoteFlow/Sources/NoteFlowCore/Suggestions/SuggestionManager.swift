@@ -11,9 +11,13 @@ public class SuggestionManager: ObservableObject {
     private let maxSuggestions = 3
     private let autoDismissSec: TimeInterval = 300 // 5 minutes
     
-    private var cleanupTask: Task<Void, Never>?
+    private let conversationStateManager: ConversationStateManager
+    private let rerankManager: RerankManager
     
-    public init() {}
+    public init(conversationStateManager: ConversationStateManager, rerankManager: RerankManager) {
+        self.conversationStateManager = conversationStateManager
+        self.rerankManager = rerankManager
+    }
     
     @MainActor
     public func startCleanupTimer() {
@@ -39,28 +43,42 @@ public class SuggestionManager: ObservableObject {
         let wordCount = segment.text.components(separatedBy: CharacterSet.whitespaces).count
         guard wordCount >= 8 else { return }
         
-        // 2. Search score > 0.72
-        guard let topResult = kbResults.first, topResult.score > 0.72 else { return }
+        // 2. Initial Search score > 0.72 (vibe check before rerank)
+        guard let firstResult = kbResults.first, firstResult.score > 0.72 else { return }
         
         // 3. 90-second cooldown
         let now = Date()
         guard now.timeIntervalSince(lastSuggestionTime) >= suggestionCooldown else { return }
         
         // 4. Not the same source as last suggestion
-        guard topResult.source != lastSourceBreadcrumb else { return }
+        guard firstResult.source != lastSourceBreadcrumb else { return }
         
-        // --- End Gate ---
+        // 5. State confidence is not "low"
+        guard conversationStateManager.state.confidence != "low" else { return }
         
         self.isThinking = true
         
+        // RUN CONCURRENTLY: Rerank and State Update
+        async let rerankedTask = rerankManager.rerank(query: segment.text, chunks: kbResults)
+        async let _ = conversationStateManager.processUtterance(speaker: segment.speaker, text: segment.text, recentTranscript: contextLines + [segment])
+        
+        let rerankedChunks = await rerankedTask
+        
+        // --- Updated Surfacing Gate (using reranked score) ---
+        guard let topReranked = rerankedChunks.first, topReranked.score > 0.72 else {
+            self.isThinking = false
+            return
+        }
+        // --- End Gate ---
+        
         // Pre-Gemini state updates
         lastSuggestionTime = now
-        lastSourceBreadcrumb = topResult.source
+        lastSourceBreadcrumb = topReranked.source
         
         // Call Gemini
-        if let suggestionText = await getGeminiSuggestion(latestUtterance: segment.text, context: contextLines, kbChunks: kbResults) {
+        if let suggestionText = await getGeminiSuggestion(latestUtterance: segment.text, kbChunks: rerankedChunks) {
             if suggestionText != "SKIP" {
-                addSuggestion(text: suggestionText, source: topResult.source)
+                addSuggestion(text: suggestionText, source: topReranked.source, score: topReranked.score)
             }
         }
         
@@ -68,8 +86,8 @@ public class SuggestionManager: ObservableObject {
     }
     
     @MainActor
-    private func addSuggestion(text: String, source: String) {
-        let card = SuggestionCard(text: text, sourceFile: source.components(separatedBy: " > ").first ?? source, sourceBreadcrumb: source)
+    private func addSuggestion(text: String, source: String, score: Float) {
+        let card = SuggestionCard(text: text, sourceFile: source.components(separatedBy: " > ").first ?? source, sourceBreadcrumb: source, score: score)
         
         self.suggestions.insert(card, at: 0)
         if self.suggestions.count > self.maxSuggestions {
@@ -89,7 +107,7 @@ public class SuggestionManager: ObservableObject {
     }
     
     @MainActor
-    private func getGeminiSuggestion(latestUtterance: String, context: [TranscriptSegment], kbChunks: [ChunkResult]) async -> String? {
+    private func getGeminiSuggestion(latestUtterance: String, kbChunks: [ChunkResult]) async -> String? {
         guard let apiKey = try? String(data: KeychainHelper.read(service: "NoteFlow", account: "GEMINI_API_KEY"), encoding: .utf8) else {
             print("Gemini API key not found in Keychain.")
             return nil
@@ -98,25 +116,25 @@ public class SuggestionManager: ObservableObject {
         let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=\(apiKey)")!
         
         // Format prompt
-        let recentConv = context.suffix(4).map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
         let kbText = kbChunks.prefix(3).map { "Source: \($0.source)\nContent: \($0.body)" }.joined(separator: "\n\n")
+        let currentState = conversationStateManager.state
         
         let promptText = """
-        You are a silent meeting assistant. The person you are helping is on a live call.
+        You are a silent meeting assistant.
 
-        What the other person just said:
+        Conversation context:
+        Topic: \(currentState.topic)
+        Summary: \(currentState.summary)
+        Open questions: \(currentState.openQuestions.joined(separator: ", "))
+
+        What they just said:
         "\(latestUtterance)"
 
-        Recent conversation:
-        \(recentConv)
-
-        Relevant notes from their knowledge base:
+        Relevant notes from knowledge base:
         \(kbText)
 
-        Based only on the notes above, suggest 1 short, specific talking point they could make right now.
-        - Max 2 sentences
-        - Be direct, no preamble like "You could say..." or "Consider mentioning..."
-        - If the notes aren't relevant enough, respond with exactly: SKIP
+        Suggest 1 specific talking point (max 2 sentences, no preamble).
+        If notes are not relevant, respond with exactly: SKIP
         """
         
         let requestBody: [String: Any] = [

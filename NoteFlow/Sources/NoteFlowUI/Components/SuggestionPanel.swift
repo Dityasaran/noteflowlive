@@ -49,6 +49,10 @@ public struct SuggestionPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
             
             HStack(spacing: 4) {
+                Circle()
+                    .fill(confidenceColor(for: card.score))
+                    .frame(width: 6, height: 6)
+                
                 Image(systemName: "doc.text.fill")
                     .font(.system(size: 10))
                 Text(card.sourceBreadcrumb)
@@ -86,5 +90,15 @@ public struct SuggestionPanel: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .background(Capsule().fill(Color(NSColor.controlBackgroundColor).opacity(0.8)))
+    }
+    
+    private func confidenceColor(for score: Float) -> Color {
+        if score > 0.85 {
+            return .green
+        } else if score >= 0.72 {
+            return .yellow
+        } else {
+            return .red
+        }
     }
 }

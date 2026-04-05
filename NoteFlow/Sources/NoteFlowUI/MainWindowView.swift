@@ -3,7 +3,9 @@ import NoteFlowCore
 
 public struct MainWindowView: View {
     @StateObject private var wsManager = WebSocketManager()
-    @StateObject private var suggestionManager = SuggestionManager()
+    @StateObject private var conversationStateManager = ConversationStateManager()
+    @StateObject private var suggestionManager: SuggestionManager
+    private let rerankManager = RerankManager()
     @StateObject private var persistenceManager = PersistenceManager()
     
     @State private var isBlackHoleInstalled: Bool = true
@@ -24,7 +26,13 @@ public struct MainWindowView: View {
     // Audio engine
     private let captureEngine = AudioCaptureEngine()
     
-    public init() {}
+    public init() {
+        let stateManager = ConversationStateManager()
+        let rManager = RerankManager()
+        _conversationStateManager = StateObject(wrappedValue: stateManager)
+        self.rerankManager = rManager
+        _suggestionManager = StateObject(wrappedValue: SuggestionManager(conversationStateManager: stateManager, rerankManager: rManager))
+    }
     
     public var body: some View {
         ZStack(alignment: .bottom) {

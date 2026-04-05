@@ -1,33 +1,33 @@
-# macOS
-.DS_Store
-
 # Python
-backend/venv/
+venv/
+venv-local/
 __pycache__/
 *.pyc
+*.pyo
 
-# Swift/Xcode
-NoteFlow/.build/
-NoteFlow/.swiftpm/
-NoteFlow/DerivedData/
-NoteFlow/build/
-*.xcodeproj/
-NoteFlow.xcworkspace/
+# Secrets & certs
+*.pem
+*.key
+.env.local
+.env
+set_gemini_key.swift
 
-# NoteFlow Specific
-NoteFlow/Sources/NoteFlowCore/Storage/kb_cache.sqlite
-transcript.txt
-session.json
+# Logs & temp
 *.log
-*.temp.json
-*.temp.txt
+*.temp
+*.tmp
 
-# Artifacts
-Notetaker_App_Icon.png
-noteflow_final_ui_mockup.png
-loopback_output.log
-release_build.log
-EOF
-backend/venv-local/
-backend/*.pem
-backend/.env.local
+# Test & plan files
+*smoke*
+*implementation_plan*
+*walkthrough*
+server_test*
+
+# Mac
+.DS_Store
+
+# Build artifacts
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+xcuserdata/

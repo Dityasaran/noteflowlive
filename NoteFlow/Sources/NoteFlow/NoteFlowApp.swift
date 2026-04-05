@@ -5,12 +5,24 @@ import NoteFlowCore
 @main
 struct NoteFlowApp: App {
     @StateObject private var kbManager = KnowledgeBaseManager()
+    @AppStorage("hasAcceptedRecordingConsent") var hasAcceptedConsent = false
     
-    init() {}
+    init() {
+        if CommandLine.arguments.contains("--reset-consent") {
+            UserDefaults.standard.removeObject(forKey: "hasAcceptedRecordingConsent")
+        }
+    }
     
     var body: some Scene {
         WindowGroup {
             MainWindowView()
+                .sheet(isPresented: .init(
+                    get: { !hasAcceptedConsent },
+                    set: { _ in }
+                )) {
+                    RecordingConsentView()
+                        .interactiveDismissDisabled()
+                }
                 .onAppear {
                     configureWindowSecurity()
                 }

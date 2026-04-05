@@ -24,10 +24,13 @@ docker run -p 8080:8080 -e WHISPER_MODEL=tiny -e EMBEDDING_MODEL=nomic-embed-tex
 
 ## 3. Mac App Setup
 
-### Build Steps
-1. Open `NoteFlow.xcodeproj` (or the root folder) in Xcode.
-2. Ensure the `NoteFlow` target is selected.
-3. Build and Run (**Cmd + R**).
+### Build
+
+# Full build → sign → install
+./scripts/build_swift_app.sh
+
+# Package as DMG for distribution
+./scripts/make_dmg.sh
 
 ### Security Configuration
 NoteFlow uses the macOS Keychain to store sensitive URLs and API keys. Use the included utility to set your keys before the first run:
