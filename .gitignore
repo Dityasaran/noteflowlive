@@ -27,9 +27,13 @@ server_test*
 .DS_Store
 
 # Build artifacts
-build/
+# build/
 dist/
 node_modules/
-DerivedData/
+dist-electron/
+# Specifically ignore electron-builder and vite outputs but allow icons/plists in build/
+**/dist/
+**/dist-electron/
+**/DerivedData/
 *.xcworkspace/xcuserdata/
 xcuserdata/
