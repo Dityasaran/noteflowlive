@@ -1,0 +1,12 @@
+appId: com.ditya.noteflowlive
+productName: NoteFlowLive
+directories:
+  output: build
+files:
+  - dist/**/*
+  - package.json
+mac:
+  target: dmg
+  category: public.app-category.productivity
+win:
+  target: nsis

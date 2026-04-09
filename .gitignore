@@ -28,6 +28,8 @@ server_test*
 
 # Build artifacts
 build/
+dist/
+node_modules/
 DerivedData/
 *.xcworkspace/xcuserdata/
 xcuserdata/
